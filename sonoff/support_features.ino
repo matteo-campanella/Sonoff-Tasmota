@@ -321,6 +321,7 @@ void GetFeatures(void)
   feature_sns1 |= 0x80000000;  // xsns_28_tm1638.ino
 #endif
 
+
 /*********************************************************************************************/
 
   feature_sns2 = 0x00000000;
@@ -399,6 +400,9 @@ void GetFeatures(void)
 #endif
 #ifdef USE_ADE7953
   feature_sns2 |= 0x01000000;  // xnrg_07_ade7953.ino
+#endif
+#ifdef USE_DDS2382
+  feature_sns2 |= 0x020000000;  // xsns_47_dds2382.ino
 #endif
 //  feature_sns2 |= 0x02000000;
 //  feature_sns2 |= 0x04000000;

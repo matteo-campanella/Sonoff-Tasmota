@@ -184,6 +184,8 @@ enum UserSelectablePins {
   GPIO_LEDLNK,         // Link led
   GPIO_LEDLNK_INV,     // Inverted link led
   GPIO_ARIRFSEL,       // Arilux RF Receive input selected
+  GPIO_DDS2382_TX,
+  GPIO_DDS2382_RX,
   GPIO_SENSOR_END };
 
 // Programmer selectable GPIO functionality
@@ -251,6 +253,7 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_ADE7953_IRQ "|"
   D_SENSOR_LED_LINK "|" D_SENSOR_LED_LINK "i|"
   D_SENSOR_ARIRFSEL "|"
+  D_SENSOR_DDS2382_TX "|" D_SENSOR_DDS2382_RX "|"
   ;
 
 // User selectable ADC0 functionality
@@ -635,7 +638,11 @@ const uint8_t kGpioNiceList[] PROGMEM = {
 #endif
 #ifdef USE_HRE
   GPIO_HRE_CLOCK,
-  GPIO_HRE_DATA
+  GPIO_HRE_DATA,
+#endif
+#ifdef USE_DDS2382
+  GPIO_DDS2382_TX,      // DDS2382 Serial interface
+  GPIO_DDS2382_RX,      // DDS2382 Serial interface
 #endif
 };
 

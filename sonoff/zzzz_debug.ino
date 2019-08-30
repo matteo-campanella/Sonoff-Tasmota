@@ -275,7 +275,7 @@ bool XsnsEnabled(uint8_t sns_index)
 }
 
 bool XsnsPresent(uint8_t sns_index)
-{
+{swsws
   uint8_t index = 0;
   for (uint32_t i = 0; i < sizeof(kXsnsList); i++) {
 #ifdef XFUNC_PTR_IN_ROM

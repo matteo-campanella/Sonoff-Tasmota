@@ -585,6 +585,8 @@
 #define D_SENSOR_HRE_CLOCK     "HRE Clock"
 #define D_SENSOR_HRE_DATA      "HRE Data"
 #define D_SENSOR_ADE7953_IRQ   "ADE7953 IRQ"
+#define D_SENSOR_DDS2382_TX    "DDS2382 Tx"
+#define D_SENSOR_DDS2382_RX    "DDS2382 Rx"
 
 // Units
 #define D_UNIT_AMPERE "A"
