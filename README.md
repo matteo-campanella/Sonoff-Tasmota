@@ -1,3 +1,6 @@
+# Fork from Sonoff-Tasmota
+Implementing support for Hiking DDS238-2 Power Meter
+
 <img src="/tools/logo/TASMOTA_FullLogo_Vector.svg" alt="Logo" align="right" height="76"/>
 
 # Sonoff-Tasmota
