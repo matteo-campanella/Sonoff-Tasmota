@@ -1,7 +1,9 @@
 /*
   xsns_47_dds2382.ino - Eastron dds2382-Modbus energy meter support for Sonoff-Tasmota
 
-  Copyright (C) 2019  Gennaro Tortone
+  Copyright (C) 2019  Matteo Campanella 
+  
+  Based on the work of Gennaro Tortone
 
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -39,12 +41,12 @@
 
 #include <TasmotaSerial.h>
 
-enum DDS2382_Error {DDS2382_ERR_NO_ERROR=0, DDS2382_ERR_CRC_ERROR, DDS2382_ERR_WRONG_BYTES, DDS2382_ERR_NOT_ENOUGHT_BYTES};
+enum DDS2382_Error {DDS2382_ERR_NO_ERROR=0, DDS2382_ERR_CRC_ERROR, DDS2382_ERR_WRONG_BYTES, DDS2382_ERR_INVALID_LENGTH};
 
 TasmotaSerial *DDS2382Serial;
 
 uint8_t dds2382_type = 1;
-//uint8_t dds2382_state = 0;
+
 
 float dds2382_voltage = 0;
 float dds2382_current = 0;
@@ -84,48 +86,41 @@ void DDS2382_ModbusSend(uint8_t function_code, uint16_t start_address, uint16_t 
   DDS2382Serial->write(frame, sizeof(frame));
 }
 
-uint8_t DDS2382_ModbusReceive(float *value)
+uint8_t DDS2382_ModbusReceive()
 {
-  uint8_t buffer[9];
-
-  *value = NAN;
+  uint8_t buffer[48];
   uint8_t len = 0;
+  uint16_t crc;
+
   while (DDS2382Serial->available() > 0) {
     buffer[len++] = (uint8_t)DDS2382Serial->read();
   }
 
-  if (len < 9) {
-    return DDS2382_ERR_NOT_ENOUGHT_BYTES;
+  if (len != 41) {
+    return DDS2382_ERR_INVALID_LENGTH;
   }
-
-  if (9 == len) {
-    if (0x01 == buffer[0] && 0x04 == buffer[1] && 4 == buffer[2]) {   // check node number, op code and reply bytes count
-      if((DDS2382_calculateCRC(buffer, 7)) == ((buffer[8] << 8) | buffer[7])) {  //calculate crc from first 7 bytes and compare with received crc (bytes 7 & 8)
-
-        ((uint8_t*)value)[3] = buffer[3];
-        ((uint8_t*)value)[2] = buffer[4];
-        ((uint8_t*)value)[1] = buffer[5];
-        ((uint8_t*)value)[0] = buffer[6];
-
+  else {
+    if (0x01 == buffer[0] && 0x03 == buffer[1] && 36 == buffer[2]) {   // check node number, op code and reply bytes count
+      crc = DDS2382_calculateCRC(buffer, 39);
+      if (crc == ((buffer[40] << 8) | buffer[39])) {  //calculate crc from first 7 bytes and compare with received crc (bytes 39 & 40)
+          //dds2382_voltage = (buffer[26] + (buffer[27] << 8)) / 10.0;
+          //dds2382_current = (buffer[28] + (buffer[29] << 8)) / 100.0;
       } else {
         return DDS2382_ERR_CRC_ERROR;
       }
-
     } else {
       return DDS2382_ERR_WRONG_BYTES;
     }
   }
-
   return DDS2382_ERR_NO_ERROR;
 }
 
 uint16_t DDS2382_calculateCRC(uint8_t *frame, uint8_t num)
 {
-  uint16_t crc, flag;
-  crc = 0xFFFF;
-  for (uint32_t i = 0; i < num; i++) {
+  uint16_t crc = 0xFFFF;
+  for (uint8_t i = 0; i < num; i++) {
     crc ^= frame[i];
-    for (uint32_t j = 8; j; j--) {
+    for (uint8_t j = 8; j; j--) {
       if ((crc & 0x0001) != 0) {        // If the LSB is set
         crc >>= 1;                      // Shift right and XOR 0xA001
         crc ^= 0xA001;
@@ -139,84 +134,23 @@ uint16_t DDS2382_calculateCRC(uint8_t *frame, uint8_t num)
 
 /*********************************************************************************************/
 
-const uint16_t dds2382_start_addresses[] {
-  0x000C,   // DDS2382C_VOLTAGE  [V]
-  0x000D,   // DDS2382C_CURRENT  [A]
-  0x000E,   // DDS2382C_POWER    [W]
-  0x000F,   // DDS2382C_REACTIVE_POWER  [VAR]
-  0x0010,   // DDS2382C_POWER_FACTOR
-  0x0011,   // DDS2382C_FREQUENCY  [Hz]
-  0x0000,   // DDS2382C_TOTAL_ACTIVE_ENERGY  [dWh]
-  0X000A, // SDM220_IMPORT_ACTIVE [dWh]
-  0X0008, // SDM220_EXPORT_ACTIVE [dWh]
-};
-
-uint8_t dds2382_read_state = 0;
 uint8_t dds2382_send_retry = 0;
 uint8_t dds2382_nodata_count = 0;
 
-void DDS2382250ms(void)              // Every 250 mSec
+void DDS2382_1s(void)              // Every second
 {
-//  dds2382_state++;
-//  if (6 == dds2382_state) {     // Every 300 mSec
-//    dds2382_state = 0;
-
     float value = 0;
     bool data_ready = DDS2382_ModbusReceiveReady();
 
     if (data_ready) {
       dds2382_nodata_count = 0;
-      uint8_t error = DDS2382_ModbusReceive(&value);
+      uint8_t error = DDS2382_ModbusReceive();
       if (error) {
-        AddLog_P2(LOG_LEVEL_DEBUG, PSTR(D_LOG_DEBUG "dds2382 response error %d"), error);
-      } else {
-        switch(dds2382_read_state) {
-          case 0:
-            dds2382_voltage = value;
-            break;
-
-          case 1:
-            dds2382_current = value;
-            break;
-
-          case 2:
-            dds2382_active_power = value;
-            break;
-
-          case 3:
-            dds2382_reactive_power = value;
-            break;
-
-          case 4:
-            dds2382_power_factor = value;
-            break;
-
-          case 5:
-            dds2382_frequency = value;
-            break;
-
-          case 6:
-            dds2382_energy_total = value;
-            break;
-
-          case 7:
-            dds2382_import_active = value;
-            break;
-
-          case 8:
-            dds2382_export_active = value;
-            break;
-        } // end switch
-
-        dds2382_read_state++;
-
-        if (sizeof(dds2382_start_addresses)/2 == dds2382_read_state) {
-          dds2382_read_state = 0;
-        }
+        AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 response error %d"), error);
       }
     } // end data ready
     else {
-      if (dds2382_nodata_count <= (1000/250) * 4) {  // max. 4 sec without data
+      if (dds2382_nodata_count <= 4) {  // max. 4 sec without data
         dds2382_nodata_count++;
       } else if (dds2382_nodata_count != 255) {
         // no data from modbus, reset values to 0
@@ -227,11 +161,10 @@ void DDS2382250ms(void)              // Every 250 mSec
 
     if (0 == dds2382_send_retry || data_ready) {
       dds2382_send_retry = 5;
-       DDS2382_ModbusSend(0x03, dds2382_start_addresses[dds2382_read_state], 2);
+      DDS2382_ModbusSend(0x03, 0, 18);
     } else {
       dds2382_send_retry--;
     }
-//  } // end 300 ms
 }
 
 void DDS2382Init(void)
@@ -312,8 +245,8 @@ bool Xsns47(uint8_t function)
       case FUNC_INIT:
         DDS2382Init();
         break;
-      case FUNC_EVERY_250_MSECOND:
-        DDS2382250ms();
+      case FUNC_EVERY_SECOND:
+        DDS2382_1s();
         break;
       case FUNC_JSON_APPEND:
         DDS2382Show(1);
