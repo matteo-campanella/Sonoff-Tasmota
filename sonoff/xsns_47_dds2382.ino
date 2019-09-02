@@ -42,21 +42,25 @@
 #include <TasmotaSerial.h>
 
 enum DDS2382_Error {DDS2382_ERR_NO_ERROR=0, DDS2382_ERR_CRC_ERROR, DDS2382_ERR_WRONG_BYTES, DDS2382_ERR_INVALID_LENGTH};
+enum DDS2382_State {DDS2382_STATE_INIT,DDS2382_STATE_READY,DDS2382_STATE_SEND_CMD,DDS2382_STATE_WAIT_RESPONSE,DDS2382_STATE_PROCESS_RESPONSE};
 
 TasmotaSerial *DDS2382Serial;
 
-uint8_t dds2382_type = 1;
+uint32_t dds2382_state = DDS2382_STATE_READY;
+uint8_t dds2382_tx_buffer[8];
+uint8_t dds2382_rx_buffer[48];
 
-
-float dds2382_voltage = 0;
-float dds2382_current = 0;
-float dds2382_active_power = 0;
-float dds2382_reactive_power = 0;
-float dds2382_power_factor = 0;
-float dds2382_frequency = 0;
-float dds2382_energy_total = 0;
-float dds2382_import_active = 0;
-float dds2382_export_active = 0;
+struct {
+  uint16_t voltage = 0;
+  uint16_t current = 0;
+  int16_t active_power = 0;
+  uint16_t reactive_power = 0;
+  uint16_t power_factor = 0;
+  uint16_t frequency = 0;
+  uint32_t energy_total = 0;
+  uint16_t import_active = 0;
+  uint16_t export_active = 0;
+} dds2382_data;
 
 bool DDS2382_ModbusReceiveReady(void)
 {
@@ -65,54 +69,49 @@ bool DDS2382_ModbusReceiveReady(void)
 
 void DDS2382_ModbusSend(uint8_t function_code, uint16_t start_address, uint16_t register_count)
 {
-  uint8_t frame[8];
+  dds2382_tx_buffer[0] = DDS2382_ADDR;
+  dds2382_tx_buffer[1] = function_code;
+  dds2382_tx_buffer[2] = (uint8_t)(start_address >> 8);
+  dds2382_tx_buffer[3] = (uint8_t)(start_address);
+  dds2382_tx_buffer[4] = (uint8_t)(register_count >> 8);
+  dds2382_tx_buffer[5] = (uint8_t)(register_count);
 
-  frame[0] = DDS2382_ADDR;
-  frame[1] = function_code;
-  frame[2] = (uint8_t)(start_address >> 8);
-  frame[3] = (uint8_t)(start_address);
-  frame[4] = (uint8_t)(register_count >> 8);
-  frame[5] = (uint8_t)(register_count);
-
-  uint16_t crc = DDS2382_calculateCRC(frame, 6);  // calculate out crc only from first 6 bytes
-  frame[6] = lowByte(crc);
-  frame[7] = highByte(crc);
+  uint16_t crc = DDS2382_calculateCRC(dds2382_tx_buffer, 6);  // calculate out crc only from first 6 bytes
+  dds2382_tx_buffer[6] = lowByte(crc);
+  dds2382_tx_buffer[7] = highByte(crc);
 
   while (DDS2382Serial->available() > 0)  {  // read serial if any old data is available
     DDS2382Serial->read();
   }
-
   DDS2382Serial->flush();
-  DDS2382Serial->write(frame, sizeof(frame));
+  DDS2382Serial->write(dds2382_tx_buffer, sizeof(dds2382_tx_buffer));
 }
 
 uint8_t DDS2382_ModbusReceive()
 {
-  uint8_t buffer[48];
-  uint8_t len = 0;
-  uint16_t crc;
-
+  uint32_t len = 0;
   while (DDS2382Serial->available() > 0) {
-    buffer[len++] = (uint8_t)DDS2382Serial->read();
+    dds2382_rx_buffer[len++] = (uint8_t)DDS2382Serial->read();
   }
-
   if (len != 41) {
     return DDS2382_ERR_INVALID_LENGTH;
   }
   else {
-    if (0x01 == buffer[0] && 0x03 == buffer[1] && 36 == buffer[2]) {   // check node number, op code and reply bytes count
-      crc = DDS2382_calculateCRC(buffer, 39);
-      if (crc == ((buffer[40] << 8) | buffer[39])) {  //calculate crc from first 7 bytes and compare with received crc (bytes 39 & 40)
-          //dds2382_voltage = (buffer[26] + (buffer[27] << 8)) / 10.0;
-          //dds2382_current = (buffer[28] + (buffer[29] << 8)) / 100.0;
-      } else {
-        return DDS2382_ERR_CRC_ERROR;
-      }
+    if (0x01 == dds2382_rx_buffer[0] && 0x03 == dds2382_rx_buffer[1] && 36 == dds2382_rx_buffer[2]) {   // check node number, op code and reply bytes count
+      return DDS2382_ERR_NO_ERROR;
     } else {
       return DDS2382_ERR_WRONG_BYTES;
     }
   }
-  return DDS2382_ERR_NO_ERROR;
+}
+
+uint8_t DDS2382_checkDataCRC() {
+  uint16_t crc = DDS2382_calculateCRC(dds2382_rx_buffer, 39);
+  if (crc == ((dds2382_rx_buffer[40] << 8) | dds2382_rx_buffer[39])) {  //calculate crc from first 7 bytes and compare with received crc (bytes 39 & 40)
+    return DDS2382_ERR_NO_ERROR;
+  } else {
+    return DDS2382_ERR_CRC_ERROR;
+  }
 }
 
 uint16_t DDS2382_calculateCRC(uint8_t *frame, uint8_t num)
@@ -134,47 +133,79 @@ uint16_t DDS2382_calculateCRC(uint8_t *frame, uint8_t num)
 
 /*********************************************************************************************/
 
-uint8_t dds2382_send_retry = 0;
 uint8_t dds2382_nodata_count = 0;
 
-void DDS2382_1s(void)              // Every second
+void DDS2382_resetData() {
+  dds2382_nodata_count = 255;
+  dds2382_data.voltage = 0;
+  dds2382_data.current = 0;
+  dds2382_data.active_power = 0;
+  dds2382_data.reactive_power = 0;
+  dds2382_data.power_factor = 0;
+  dds2382_data.frequency = 0;
+  dds2382_data.energy_total = 0;
+  dds2382_data.import_active = 0;
+  dds2382_data.export_active = 0;
+}
+
+void DDS2382_250ms(void)
 {
-    float value = 0;
-    bool data_ready = DDS2382_ModbusReceiveReady();
+  uint8_t error;
 
-    if (data_ready) {
-      dds2382_nodata_count = 0;
-      uint8_t error = DDS2382_ModbusReceive();
-      if (error) {
-        AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 response error %d"), error);
-      }
-    } // end data ready
-    else {
-      if (dds2382_nodata_count <= 4) {  // max. 4 sec without data
-        dds2382_nodata_count++;
-      } else if (dds2382_nodata_count != 255) {
-        // no data from modbus, reset values to 0
-        dds2382_nodata_count = 255;
-        dds2382_voltage = dds2382_current = dds2382_active_power = dds2382_reactive_power = dds2382_power_factor = dds2382_frequency = dds2382_energy_total = dds2382_import_active = dds2382_export_active = 0;
-      }
-    }
-
-    if (0 == dds2382_send_retry || data_ready) {
-      dds2382_send_retry = 5;
+  AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 state %d"), dds2382_state);
+  switch (dds2382_state) {
+    case DDS2382_STATE_READY:
+      dds2382_state = DDS2382_STATE_SEND_CMD;
+      break;
+    case DDS2382_STATE_SEND_CMD:
       DDS2382_ModbusSend(0x03, 0, 18);
-    } else {
-      dds2382_send_retry--;
-    }
+      dds2382_nodata_count = 0;
+      dds2382_state = DDS2382_STATE_WAIT_RESPONSE;
+      break;
+    case DDS2382_STATE_WAIT_RESPONSE:
+      if (DDS2382_ModbusReceiveReady()) {
+        error = DDS2382_ModbusReceive();
+        if (error) {
+          AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 response error %d"), error);
+          dds2382_state = DDS2382_STATE_SEND_CMD;
+        }
+        else dds2382_state = DDS2382_STATE_PROCESS_RESPONSE;
+      }
+      else {
+        if (dds2382_nodata_count < 15) dds2382_nodata_count++;  // max. 4 sec without data
+        else if (dds2382_nodata_count != 255) {
+          // no data from modbus, reset values
+          DDS2382_resetData();
+          dds2382_state = DDS2382_STATE_SEND_CMD;
+        }
+      }
+      break;
+    case DDS2382_STATE_PROCESS_RESPONSE:
+      error = DDS2382_checkDataCRC();
+      if (error) {
+          AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 CRC error %d"), error);
+           
+      }
+      else {
+        AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 process data %d"), error);
+
+      }
+      dds2382_state = DDS2382_STATE_SEND_CMD;
+      break;
+    default: //invalid state - reset
+      DDS2382_resetData();
+      dds2382_state = DDS2382_STATE_SEND_CMD;
+  }
 }
 
 void DDS2382Init(void)
 {
-  dds2382_type = 0;
+  dds2382_state = DDS2382_STATE_INIT;
   if ((pin[GPIO_DDS2382_RX] < 99) && (pin[GPIO_DDS2382_TX] < 99)) {
     DDS2382Serial = new TasmotaSerial(pin[GPIO_DDS2382_RX], pin[GPIO_DDS2382_TX], 1);
     if (DDS2382Serial->begin(DDS2382_SPEED)) {
       if (DDS2382Serial->hardwareSerial()) { ClaimSerial(); }
-      dds2382_type = 1;
+      dds2382_state = DDS2382_STATE_READY;
     }
   }
 }
@@ -196,33 +227,33 @@ const char HTTP_SNS_DDS2382_DATA[] PROGMEM =
 void DDS2382Show(bool json)
 {
   char voltage[33];
-  dtostrfd(dds2382_voltage,        Settings.flag2.voltage_resolution, voltage);
+  dtostrfd(((float)dds2382_data.voltage)/10, Settings.flag2.voltage_resolution, voltage);
   char current[33];
-  dtostrfd(dds2382_current,        Settings.flag2.current_resolution, current);
+  dtostrfd(((float)dds2382_data.current)/100, Settings.flag2.current_resolution, current);
   char active_power[33];
-  dtostrfd(dds2382_active_power,   Settings.flag2.wattage_resolution, active_power);
+  dtostrfd(((float)dds2382_data.active_power), Settings.flag2.wattage_resolution, active_power);
   char reactive_power[33];
-  dtostrfd(dds2382_reactive_power, Settings.flag2.wattage_resolution, reactive_power);
+  dtostrfd(((float)dds2382_data.reactive_power), Settings.flag2.wattage_resolution, reactive_power);
   char power_factor[33];
-  dtostrfd(dds2382_power_factor,   2, power_factor);
+  dtostrfd(((float)dds2382_data.power_factor)/1000, 2, power_factor);
   char frequency[33];
-  dtostrfd(dds2382_frequency,      Settings.flag2.frequency_resolution, frequency);
+  dtostrfd(((float)dds2382_data.frequency)/100, Settings.flag2.frequency_resolution, frequency);
   char energy_total[33];
-  dtostrfd(dds2382_energy_total,   Settings.flag2.energy_resolution, energy_total);
+  dtostrfd(((float)dds2382_data.energy_total)/100, Settings.flag2.energy_resolution, energy_total);
   char import_active[33];
-  dtostrfd(dds2382_import_active,  Settings.flag2.wattage_resolution, import_active);
+  dtostrfd(((float)dds2382_data.import_active)/100, Settings.flag2.wattage_resolution, import_active);
   char export_active[33];
-  dtostrfd(dds2382_export_active,  Settings.flag2.wattage_resolution, export_active);
+  dtostrfd(((float)dds2382_data.export_active)/100, Settings.flag2.wattage_resolution, export_active);
   if (json) {
     ResponseAppend_P(PSTR(",\"" D_RSLT_ENERGY "\":{\"" D_JSON_TOTAL "\":%s,\"" D_JSON_ACTIVE_POWERUSAGE "\":%s,\"" D_JSON_REACTIVE_POWERUSAGE "\":%s,\"" D_JSON_FREQUENCY "\":%s,\"" D_JSON_POWERFACTOR "\":%s,\"" D_JSON_VOLTAGE "\":%s,\"" D_JSON_CURRENT  "\":%s,\"" D_JSON_IMPORT_ACTIVE "\":%s,\"" D_JSON_EXPORT_ACTIVE "\":%s}"),
       energy_total, active_power, reactive_power, frequency, power_factor, voltage, current, import_active, export_active);
 #ifdef USE_DOMOTICZ
     if (0 == tele_period) {
       char energy_total_chr[33];
-      dtostrfd(dds2382_energy_total * 1000, 1, energy_total_chr);
+      dtostrfd(dds2382_data.energy_total * 1000, 1, energy_total_chr);
       DomoticzSensor(DZ_VOLTAGE, voltage);
       DomoticzSensor(DZ_CURRENT, current);
-      DomoticzSensorPowerEnergy((int)dds2382_active_power, energy_total_chr);
+      DomoticzSensorPowerEnergy(dds2382_data.active_power, energy_total_chr);
     }
 #endif  // USE_DOMOTICZ
 #ifdef USE_WEBSERVER
@@ -240,13 +271,13 @@ bool Xsns47(uint8_t function)
 {
   bool result = false;
 
-  if (dds2382_type) {
+  if (dds2382_state > DDS2382_STATE_INIT) {
     switch (function) {
       case FUNC_INIT:
         DDS2382Init();
         break;
-      case FUNC_EVERY_SECOND:
-        DDS2382_1s();
+      case FUNC_EVERY_250_MSECOND:
+        DDS2382_250ms();
         break;
       case FUNC_JSON_APPEND:
         DDS2382Show(1);
