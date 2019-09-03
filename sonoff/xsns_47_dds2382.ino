@@ -89,10 +89,7 @@ void DDS2382_ModbusSend(uint8_t function_code, uint16_t start_address, uint16_t 
 
 uint8_t DDS2382_ModbusReceive()
 {
-  uint32_t len = 0;
-  while (DDS2382Serial->available() > 0) {
-    dds2382_rx_buffer[len++] = (uint8_t)DDS2382Serial->read();
-  }
+  uint32_t len = DDS2382Serial->readBytes(dds2382_rx_buffer,41);
   if (len != 41) {
     return DDS2382_ERR_INVALID_LENGTH;
   }
@@ -135,24 +132,25 @@ uint16_t DDS2382_calculateCRC(uint8_t *frame, uint8_t num)
 
 uint8_t dds2382_nodata_count = 0;
 
-void DDS2382_resetData() {
+void DDS2382_reset() {
   dds2382_nodata_count = 255;
-  dds2382_data.voltage = 0;
-  dds2382_data.current = 0;
-  dds2382_data.active_power = 0;
-  dds2382_data.reactive_power = 0;
+  dds2382_state = DDS2382_STATE_READY;
+  
+  //dds2382_data.voltage = 0;
+  //dds2382_data.current = 0;
+  //dds2382_data.active_power = 0;
+  //dds2382_data.reactive_power = 0;
   dds2382_data.power_factor = 0;
-  dds2382_data.frequency = 0;
-  dds2382_data.energy_total = 0;
-  dds2382_data.import_active = 0;
-  dds2382_data.export_active = 0;
+  //dds2382_data.frequency = 0;
+  //dds2382_data.energy_total = 0;
+  //dds2382_data.import_active = 0;
+  //dds2382_data.export_active = 0;
 }
 
 void DDS2382_250ms(void)
 {
   uint8_t error;
 
-  AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 state %d"), dds2382_state);
   switch (dds2382_state) {
     case DDS2382_STATE_READY:
       dds2382_state = DDS2382_STATE_SEND_CMD;
@@ -174,27 +172,67 @@ void DDS2382_250ms(void)
       else {
         if (dds2382_nodata_count < 15) dds2382_nodata_count++;  // max. 4 sec without data
         else if (dds2382_nodata_count != 255) {
-          // no data from modbus, reset values
-          DDS2382_resetData();
-          dds2382_state = DDS2382_STATE_SEND_CMD;
+          // no data from modbus, reset
+          DDS2382_reset();
         }
       }
       break;
     case DDS2382_STATE_PROCESS_RESPONSE:
       error = DDS2382_checkDataCRC();
-      if (error) {
-          AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 CRC error %d"), error);
-           
-      }
+      if (error) AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 CRC error %d"), error);
       else {
-        AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_DEBUG "dds2382 process data %d"), error);
+        dds2382_data.voltage = dds2382_rx_buffer[27];
+        dds2382_data.voltage <<= 8;
+        dds2382_data.voltage += dds2382_rx_buffer[28];
 
+        dds2382_data.current = dds2382_rx_buffer[29];
+        dds2382_data.current <<= 8;
+        dds2382_data.current += dds2382_rx_buffer[30];
+
+        dds2382_data.active_power = dds2382_rx_buffer[31];
+        dds2382_data.active_power <<= 8;
+        dds2382_data.active_power += dds2382_rx_buffer[32];
+
+        dds2382_data.reactive_power = dds2382_rx_buffer[33];
+        dds2382_data.reactive_power <<= 8;
+        dds2382_data.reactive_power += dds2382_rx_buffer[34];
+
+        dds2382_data.power_factor = dds2382_rx_buffer[35];
+        dds2382_data.power_factor <<= 8;
+        dds2382_data.power_factor += dds2382_rx_buffer[36];
+
+        dds2382_data.frequency = dds2382_rx_buffer[37];
+        dds2382_data.frequency <<= 8;
+        dds2382_data.frequency += dds2382_rx_buffer[38];
+
+        dds2382_data.energy_total = dds2382_rx_buffer[3];
+        dds2382_data.energy_total <<= 8;
+        dds2382_data.energy_total += dds2382_rx_buffer[4];
+        dds2382_data.energy_total <<= 8;
+        dds2382_data.energy_total += dds2382_rx_buffer[5];
+        dds2382_data.energy_total <<= 8;
+        dds2382_data.energy_total += dds2382_rx_buffer[6];
+
+        dds2382_data.export_active = dds2382_rx_buffer[11];
+        dds2382_data.export_active <<= 8;
+        dds2382_data.export_active += dds2382_rx_buffer[12];
+        dds2382_data.export_active <<= 8;
+        dds2382_data.export_active += dds2382_rx_buffer[13];
+        dds2382_data.export_active <<= 8;
+        dds2382_data.export_active += dds2382_rx_buffer[14];
+
+        dds2382_data.import_active = dds2382_rx_buffer[15];
+        dds2382_data.import_active <<= 8;
+        dds2382_data.import_active += dds2382_rx_buffer[16];
+        dds2382_data.import_active <<= 8;
+        dds2382_data.import_active += dds2382_rx_buffer[17];
+        dds2382_data.import_active <<= 8;
+        dds2382_data.import_active += dds2382_rx_buffer[18];               
       }
       dds2382_state = DDS2382_STATE_SEND_CMD;
       break;
     default: //invalid state - reset
-      DDS2382_resetData();
-      dds2382_state = DDS2382_STATE_SEND_CMD;
+      DDS2382_reset();
   }
 }
 
@@ -205,6 +243,7 @@ void DDS2382Init(void)
     DDS2382Serial = new TasmotaSerial(pin[GPIO_DDS2382_RX], pin[GPIO_DDS2382_TX], 1);
     if (DDS2382Serial->begin(DDS2382_SPEED)) {
       if (DDS2382Serial->hardwareSerial()) { ClaimSerial(); }
+      DDS2382Serial->setTimeout(50);
       dds2382_state = DDS2382_STATE_READY;
     }
   }
