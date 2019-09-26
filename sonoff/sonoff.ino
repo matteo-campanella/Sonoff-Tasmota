@@ -631,7 +631,7 @@ void MqttDataHandler(char* topic, uint8_t* data, unsigned int data_len)
     else if (CMND_FLASHAVR == command_code) {
       Settings.flashAVR = 1;
       SettingsSave(1);
-      EspRestart();
+      ESP.Restart();
     }
     else if (CMND_BACKLOG == command_code) {
       if (data_len) {
@@ -2997,45 +2997,43 @@ void loop(void)
  
   uint32_t my_sleep = millis();
 
-  if (1 == Settings.flashAVR) {
-      XdrvCall(FUNC_LOOP);
-      XsnsCall(FUNC_LOOP);
+  XdrvCall(FUNC_LOOP);
+  XsnsCall(FUNC_LOOP);
 
-      OsWatchLoop();
+  OsWatchLoop();
 
-      ButtonLoop();
-      SwitchLoop();
-    #ifdef ROTARY_V1
-      RotaryLoop();
-    #endif
+  ButtonLoop();
+  SwitchLoop();
+#ifdef ROTARY_V1
+  RotaryLoop();
+#endif
 
-      if (TimeReached(state_50msecond)) {
-        SetNextTimeInterval(state_50msecond, 50);
-        XdrvCall(FUNC_EVERY_50_MSECOND);
-        XsnsCall(FUNC_EVERY_50_MSECOND);
-      }
-      if (TimeReached(state_100msecond)) {
-        SetNextTimeInterval(state_100msecond, 100);
-        Every100mSeconds();
-        XdrvCall(FUNC_EVERY_100_MSECOND);
-        XsnsCall(FUNC_EVERY_100_MSECOND);
-      }
-      if (TimeReached(state_250msecond)) {
-        SetNextTimeInterval(state_250msecond, 250);
-        Every250mSeconds();
-        XdrvCall(FUNC_EVERY_250_MSECOND);
-        XsnsCall(FUNC_EVERY_250_MSECOND);
-      }
-
-      if (!serial_local) { SerialInput(); }
-
-    #ifdef USE_ARDUINO_OTA
-      MDNS.update();
-      ArduinoOTA.handle();
-      // Once OTA is triggered, only handle that and dont do other stuff. (otherwise it fails)
-      while (arduino_ota_triggered) ArduinoOTA.handle();
-    #endif  // USE_ARDUINO_OTA
+  if (TimeReached(state_50msecond)) {
+    SetNextTimeInterval(state_50msecond, 50);
+    XdrvCall(FUNC_EVERY_50_MSECOND);
+    XsnsCall(FUNC_EVERY_50_MSECOND);
   }
+  if (TimeReached(state_100msecond)) {
+    SetNextTimeInterval(state_100msecond, 100);
+    Every100mSeconds();
+    XdrvCall(FUNC_EVERY_100_MSECOND);
+    XsnsCall(FUNC_EVERY_100_MSECOND);
+  }
+  if (TimeReached(state_250msecond)) {
+    SetNextTimeInterval(state_250msecond, 250);
+    Every250mSeconds();
+    XdrvCall(FUNC_EVERY_250_MSECOND);
+    XsnsCall(FUNC_EVERY_250_MSECOND);
+  }
+
+  if (!serial_local) { SerialInput(); }
+
+#ifdef USE_ARDUINO_OTA
+  MDNS.update();
+  ArduinoOTA.handle();
+  // Once OTA is triggered, only handle that and dont do other stuff. (otherwise it fails)
+  while (arduino_ota_triggered) ArduinoOTA.handle();
+#endif  // USE_ARDUINO_OTA
 
   uint32_t my_activity = millis() - my_sleep;
 
