@@ -1188,6 +1188,7 @@ void SettingsDelta(void)
     }
 
     Settings.version = VERSION;
+    //Settings.flashAVR = 0;
     SettingsSave(1);
   }
 }

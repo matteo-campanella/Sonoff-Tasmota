@@ -49,6 +49,7 @@
 #endif
 
 // Libraries
+#include <ESP8266AVRISP.h>
 #include <ESP8266HTTPClient.h>              // Ota
 #include <ESP8266httpUpdate.h>              // Ota
 #include <StreamString.h>                   // Webserver, Updater
@@ -81,7 +82,7 @@ enum TasmotaCommands {
   CMND_LOGHOST, CMND_LOGPORT, CMND_IPADDRESS, CMND_NTPSERVER, CMND_AP, CMND_SSID, CMND_PASSWORD, CMND_HOSTNAME,
   CMND_WIFICONFIG, CMND_FRIENDLYNAME, CMND_SWITCHMODE, CMND_INTERLOCK, CMND_TEMPLATE,
   CMND_TELEPERIOD, CMND_RESTART, CMND_RESET, CMND_TIMEZONE, CMND_TIMESTD, CMND_TIMEDST, CMND_ALTITUDE, CMND_LEDPOWER, CMND_LEDSTATE, CMND_LEDMASK,
-  CMND_I2CSCAN, CMND_SERIALSEND, CMND_BAUDRATE, CMND_SERIALDELIMITER, CMND_DRIVER };
+  CMND_I2CSCAN, CMND_SERIALSEND, CMND_BAUDRATE, CMND_SERIALDELIMITER, CMND_DRIVER, CMND_FLASHAVR };
 const char kTasmotaCommands[] PROGMEM =
   D_CMND_BACKLOG "|" D_CMND_DELAY "|" D_CMND_POWER "|" D_CMND_FANSPEED "|" D_CMND_STATUS "|" D_CMND_STATE "|"  D_CMND_POWERONSTATE "|" D_CMND_PULSETIME "|"
   D_CMND_BLINKTIME "|" D_CMND_BLINKCOUNT "|" D_CMND_SENSOR "|" D_CMND_SAVEDATA "|" D_CMND_SETOPTION "|" D_CMND_TEMPERATURE_RESOLUTION "|" D_CMND_HUMIDITY_RESOLUTION "|"
@@ -91,11 +92,15 @@ const char kTasmotaCommands[] PROGMEM =
   D_CMND_LOGHOST "|" D_CMND_LOGPORT "|" D_CMND_IPADDRESS "|" D_CMND_NTPSERVER "|" D_CMND_AP "|" D_CMND_SSID "|" D_CMND_PASSWORD "|" D_CMND_HOSTNAME "|"
   D_CMND_WIFICONFIG "|" D_CMND_FRIENDLYNAME "|" D_CMND_SWITCHMODE "|" D_CMND_INTERLOCK "|" D_CMND_TEMPLATE "|"
   D_CMND_TELEPERIOD "|" D_CMND_RESTART "|" D_CMND_RESET "|" D_CMND_TIMEZONE "|" D_CMND_TIMESTD "|" D_CMND_TIMEDST "|" D_CMND_ALTITUDE "|" D_CMND_LEDPOWER "|" D_CMND_LEDSTATE "|" D_CMND_LEDMASK "|"
-  D_CMND_I2CSCAN "|" D_CMND_SERIALSEND "|" D_CMND_BAUDRATE "|" D_CMND_SERIALDELIMITER "|" D_CMND_DRIVER;
+  D_CMND_I2CSCAN "|" D_CMND_SERIALSEND "|" D_CMND_BAUDRATE "|" D_CMND_SERIALDELIMITER "|" D_CMND_DRIVER "|" D_CMND_FLASHAVR;
 
 const char kSleepMode[] PROGMEM = "Dynamic|Normal";
 
 // Global variables
+const uint16_t port = 328;
+const uint8_t reset_pin = 5;
+ESP8266AVRISP avrprog(port, reset_pin);
+
 SerialConfig serial_config = SERIAL_8N1;    // Serial interface configuration 8 data bits, No parity, 1 stop bit
 
 WiFiUDP PortUdp;                            // UDP Syslog and Alexa
@@ -191,8 +196,40 @@ char mqtt_data[MESSZ];                      // MQTT publish buffer and web page 
 char log_data[LOGSZ];                       // Logging
 char web_log[WEB_LOG_SIZE] = {'\0'};        // Web log buffer
 String backlog[MAX_BACKLOG];                // Command backlog
+char flashavrdone = 0;
 
 /********************************************************************************************/
+
+void flashAVR() {
+  static AVRISPState_t last_state = AVRISP_STATE_IDLE;
+  AVRISPState_t new_state = avrprog.update();
+  if (last_state != new_state) {
+    switch (new_state) {
+      case AVRISP_STATE_IDLE: {
+          Serial.printf("[AVRISP] now idle\r\n");
+          // Use the SPI bus for other purposes
+          flashavrdone = (flashavrdone==1?2:0);
+          break;
+        }
+      case AVRISP_STATE_PENDING: {
+          Serial.printf("[AVRISP] connection pending\r\n");
+          // Clean up your other purposes and prepare for programming mode
+          break;
+        }
+      case AVRISP_STATE_ACTIVE: {
+          Serial.printf("[AVRISP] programming mode\r\n");
+          // Stand by for completion
+          flashavrdone = 1;
+          break;
+        }
+    }
+    last_state = new_state;
+  }
+  // Serve the client
+  if (last_state != AVRISP_STATE_IDLE) {
+    avrprog.serve();
+  }
+}
 
 char* Format(char* output, const char* input, int size)
 {
@@ -590,6 +627,11 @@ void MqttDataHandler(char* topic, uint8_t* data, unsigned int data_len)
           type = nullptr;  // Unknown command
         }
       }
+    }
+    else if (CMND_FLASHAVR == command_code) {
+      Settings.flashAVR = 1;
+      SettingsSave(1);
+      EspRestart();
     }
     else if (CMND_BACKLOG == command_code) {
       if (data_len) {
@@ -2928,53 +2970,72 @@ void setup(void)
   ArduinoOTAInit();
 #endif  // USE_ARDUINO_OTA
 
+  avrprog.setReset(false); // let the AVR run
+
   XdrvCall(FUNC_INIT);
   XsnsCall(FUNC_INIT);
+
+  if (1 == Settings.flashAVR) {
+    Serial.println("Starting flashAVR");
+    avrprog.begin();
+  }
 }
 
 uint32_t _counter = 0;
 
 void loop(void)
 {
+  if (1 == Settings.flashAVR) {
+    flashAVR();
+    if (2 == flashavrdone) {
+      Serial.println("Done flashAVR");
+      Settings.flashAVR = 0;
+      SettingsSave(1);
+      ESP.restart();
+    }
+  }
+ 
   uint32_t my_sleep = millis();
 
-  XdrvCall(FUNC_LOOP);
-  XsnsCall(FUNC_LOOP);
+  if (1 == Settings.flashAVR) {
+      XdrvCall(FUNC_LOOP);
+      XsnsCall(FUNC_LOOP);
 
-  OsWatchLoop();
+      OsWatchLoop();
 
-  ButtonLoop();
-  SwitchLoop();
-#ifdef ROTARY_V1
-  RotaryLoop();
-#endif
+      ButtonLoop();
+      SwitchLoop();
+    #ifdef ROTARY_V1
+      RotaryLoop();
+    #endif
 
-  if (TimeReached(state_50msecond)) {
-    SetNextTimeInterval(state_50msecond, 50);
-    XdrvCall(FUNC_EVERY_50_MSECOND);
-    XsnsCall(FUNC_EVERY_50_MSECOND);
+      if (TimeReached(state_50msecond)) {
+        SetNextTimeInterval(state_50msecond, 50);
+        XdrvCall(FUNC_EVERY_50_MSECOND);
+        XsnsCall(FUNC_EVERY_50_MSECOND);
+      }
+      if (TimeReached(state_100msecond)) {
+        SetNextTimeInterval(state_100msecond, 100);
+        Every100mSeconds();
+        XdrvCall(FUNC_EVERY_100_MSECOND);
+        XsnsCall(FUNC_EVERY_100_MSECOND);
+      }
+      if (TimeReached(state_250msecond)) {
+        SetNextTimeInterval(state_250msecond, 250);
+        Every250mSeconds();
+        XdrvCall(FUNC_EVERY_250_MSECOND);
+        XsnsCall(FUNC_EVERY_250_MSECOND);
+      }
+
+      if (!serial_local) { SerialInput(); }
+
+    #ifdef USE_ARDUINO_OTA
+      MDNS.update();
+      ArduinoOTA.handle();
+      // Once OTA is triggered, only handle that and dont do other stuff. (otherwise it fails)
+      while (arduino_ota_triggered) ArduinoOTA.handle();
+    #endif  // USE_ARDUINO_OTA
   }
-  if (TimeReached(state_100msecond)) {
-    SetNextTimeInterval(state_100msecond, 100);
-    Every100mSeconds();
-    XdrvCall(FUNC_EVERY_100_MSECOND);
-    XsnsCall(FUNC_EVERY_100_MSECOND);
-  }
-  if (TimeReached(state_250msecond)) {
-    SetNextTimeInterval(state_250msecond, 250);
-    Every250mSeconds();
-    XdrvCall(FUNC_EVERY_250_MSECOND);
-    XsnsCall(FUNC_EVERY_250_MSECOND);
-  }
-
-  if (!serial_local) { SerialInput(); }
-
-#ifdef USE_ARDUINO_OTA
-  MDNS.update();
-  ArduinoOTA.handle();
-  // Once OTA is triggered, only handle that and dont do other stuff. (otherwise it fails)
-  while (arduino_ota_triggered) ArduinoOTA.handle();
-#endif  // USE_ARDUINO_OTA
 
   uint32_t my_activity = millis() - my_sleep;
 
