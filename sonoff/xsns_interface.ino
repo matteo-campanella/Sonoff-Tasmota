@@ -267,7 +267,6 @@ const uint8_t xsns_present = sizeof(xsns_func_ptr) / sizeof(xsns_func_ptr[0]);  
 /*********************************************************************************************\
  * Function call to all xsns
 \*********************************************************************************************/
-
 bool XsnsNextCall(uint8_t Function, uint8_t &xsns_index)
 {
   xsns_index++;

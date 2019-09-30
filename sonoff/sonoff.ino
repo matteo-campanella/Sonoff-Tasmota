@@ -631,7 +631,7 @@ void MqttDataHandler(char* topic, uint8_t* data, unsigned int data_len)
     else if (CMND_FLASHAVR == command_code) {
       Settings.flashAVR = 1;
       SettingsSave(1);
-      ESP.Restart();
+      ESP.restart();
     }
     else if (CMND_BACKLOG == command_code) {
       if (data_len) {
